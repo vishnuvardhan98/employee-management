@@ -1,0 +1,8 @@
+import { Component, inject, OnInit } from '@angular/core';
+import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
+import { MatButtonModule } from '@angular/material/button';
+import { MatSnackBarModule } from '@angular/material/snack-bar';
+import { AuthService } from './auth.service';
+@Component({selector:'app-shell',imports:[RouterLink,RouterLinkActive,RouterOutlet,MatButtonModule,MatSnackBarModule],template:`
+<div class="workspace"><aside class="sidebar"><a class="brand" routerLink="/employees"><span class="brand-mark">p.</span> PeopleDesk</a><div class="workspace-label">WORKSPACE</div><nav aria-label="Main navigation"><a routerLink="/employees" routerLinkActive="selected"><span aria-hidden="true">◫</span> Employees</a><a routerLink="/reports" routerLinkActive="selected"><span aria-hidden="true">▥</span> Reports</a></nav><div class="sidebar-bottom"><div class="demo-badge">● Frontend demo</div><p>Your team. A clearer view.</p><div class="profile"><span class="avatar">AD</span><div><strong>Administrator</strong><small>Workspace admin</small></div></div><button mat-button (click)="auth.logout()">Sign out ↗</button></div></aside><div class="main-area"><header class="topbar"><span>Workspace <span class="breadcrumb">/ People operations</span></span><span class="topbar-right"><span class="status-dot"></span> Local demo <span class="avatar small">AD</span><button class="mobile-signout" mat-button (click)="auth.logout()">Sign out</button></span></header><main class="page-content"><router-outlet /></main><footer>PeopleDesk <span>Made for the people behind the work.</span></footer></div></div>`})
+export class ShellComponent implements OnInit {auth=inject(AuthService);ngOnInit(){this.auth.startIdle();}}
