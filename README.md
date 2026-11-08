@@ -1,85 +1,216 @@
 # PeopleDesk — Employee Management
 
-An Angular 19 + Angular Material frontend for the Application Developer assessment. This phase runs independently with browser demo data. Spring Boot and MySQL are the next phase.
+A full-stack employee management application built for the Application Developer skill assessment.
 
-## Run locally
+| Layer     | Technology |
+| --------- | ---------- |
+| Frontend  | Angular 19 (standalone components, signals, Reactive Forms), Angular Material |
+| Backend   | Spring Boot 3.4 (Java 21), Spring Security, Spring Data JPA / Hibernate, Bean Validation |
+| Database  | MySQL 8.4, schema managed by Flyway |
+| Auth      | JWT access tokens (HS256, 15 min) + rotating refresh tokens, BCrypt password hashes |
+| Reports   | Apache POI (Excel), OpenPDF (PDF; LGPL fork of iText) |
+| Packaging | Multi-stage Dockerfile + docker compose |
 
-Install a current Node.js 22 release and npm (verified with Node 22.23.4). Open a terminal:
+```
+Browser ──► Angular SPA ──HTTP/JSON (Bearer JWT)──► Spring Boot REST API ──JPA──► MySQL
+            (dev: :4200, proxied)                   (:8080, also serves the SPA in Docker)   (:3306)
+```
+
+## Quick start (Docker — recommended)
+
+Requires Docker Desktop (or Docker Engine with the compose plugin).
 
 ```sh
+cp .env.example .env          # optional: set JWT_SECRET and passwords
+docker compose up --build
+```
+
+Open **http://localhost:8080** and sign in:
+
+| Username | Password     | Role  | Access |
+| -------- | ------------ | ----- | ------ |
+| `admin`  | `Admin@123`  | ADMIN | Employees (full CRUD) and Reports |
+| `viewer` | `Viewer@123` | USER  | Employees (read-only); the Reports menu is hidden and its API returns 403 |
+
+What happens:
+
+1. The `Dockerfile` builds the Angular app, copies it into the Spring Boot jar, runs the backend tests (on in-memory H2), and produces a small JRE image that runs as a non-root user.
+2. `docker-compose.yml` starts MySQL 8.4 (data kept in the `mysql-data` volume), waits until it is healthy, then starts the app.
+3. On first start, Flyway creates the schema (`V1`) and loads demo data (`V2`: 6 departments, 25 fictional employees, 2 users).
+
+Useful commands:
+
+```sh
+docker compose logs -f app                        # application logs
+docker compose down                               # stop (data kept)
+docker compose down -v                            # stop and delete the database volume
+docker compose build --build-arg SKIP_TESTS=true  # faster image build
+```
+
+> If `JWT_SECRET` is empty, the app generates a random signing key at each start, so everyone is signed out after a restart. Set a value of at least 32 characters for stable sessions (`openssl rand -base64 48`).
+
+## Local development (without Docker for the app)
+
+Prerequisites: Java 21, Maven 3.9+, Node.js 22, and a MySQL 8 server. The easiest way to get MySQL is `docker compose up -d mysql`.
+
+```sh
+# Backend → http://localhost:8080
+cd backend
+mvn spring-boot:run       # uses DB_URL / DB_USERNAME / DB_PASSWORD, defaulting to localhost:3306 peopledesk/peopledesk
+
+# Frontend → http://localhost:4200  (proxy.conf.json forwards /api to :8080)
 cd frontend
 npm ci
 npm start
 ```
 
-Open http://127.0.0.1:4200. Sign in with **admin / Admin@123**.
+Run the backend tests: `cd backend && mvn test` (no MySQL needed; uses H2 in MySQL mode with the real Flyway schema).
 
-```sh
-npm run build
+### Configuration
+
+| Variable | Default | Purpose |
+| -------- | ------- | ------- |
+| `DB_URL` | `jdbc:mysql://localhost:3306/peopledesk?...` | JDBC URL |
+| `DB_USERNAME` / `DB_PASSWORD` | `peopledesk` / `peopledesk` | Database credentials |
+| `JWT_SECRET` | *(random per start)* | HMAC key, ≥ 32 bytes |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:4200,http://127.0.0.1:4200` | Only needed if the SPA calls the API cross-origin |
+| `PORT` | `8080` | HTTP port |
+
+Token lifetimes and the export row limit are in `backend/src/main/resources/application.yml`.
+
+## Features and use cases
+
+| Use case | Implementation |
+| -------- | -------------- |
+| UC-LOGIN-01 Login | `POST /api/auth/login`. JWT + refresh token stored in localStorage, redirect to `/employees`, generic error message for bad credentials |
+| UC-LOGIN-02 Validation | Reactive form: username required, ≥ 3 chars; password required, ≥ 6 chars; submit disabled until valid. Same rules on the server |
+| UC-LOGIN-03 Remember me | Remembers the username and extends the refresh-token lifetime from 8 h to 7 days. Access tokens are refreshed automatically (`/api/auth/refresh`, single-use rotating tokens) |
+| UC-LOGIN-04 Session timeout | 30-minute idle timer (mouse, keyboard, scroll) with a one-minute warning and a "Stay signed in" action |
+| UC-TXN-01 View | Material table with server-side pagination (10 per page), sorting on every column, and filters |
+| UC-TXN-02 Add | Dialog form with validation, success toast, table and summary cards refresh |
+| UC-TXN-03 Edit | Click a row (or Edit) to open a pre-filled dialog that sends `PUT` |
+| UC-TXN-04 Delete | Confirmation dialog, then a hard `DELETE` with a toast; the table refreshes |
+| UC-TXN-05 Validation | Client: required, length, custom `workEmail` / `phoneNumber` / `notBlank` / `notInFuture` validators. Server: Bean Validation and a case-insensitive duplicate-email check (409 shown on the email field), with a DB `UNIQUE` constraint as the last line of defence |
+| UC-TXN-06 Search | Real-time search on name, email, and title with a 300 ms debounce; department and status filters; clear buttons |
+| UC-RPT-01 View report | Read-only paginated, sortable table with date-range, department, and status filters |
+| UC-RPT-02 Excel | Server-side Apache POI `.xlsx` with every filtered row, styled headers, frozen header row, auto-filter, and a "Report info" sheet |
+| UC-RPT-03 PDF | Server-side OpenPDF: landscape, title, filters and generation date, header row repeated on each page, company header/footer, page numbers |
+| UC-RPT-04 Summary | Cards (total and per-status counts with percentages) plus department and join-month breakdowns from SQL `COUNT … GROUP BY` |
+| UC-RPT-05 Date range | Material date-range picker, defaulting to the 1st of this month through today; from ≤ to is validated on client and server |
+| UC-LOGOUT-01 Logout | Clears tokens from localStorage, redirects to `/login`; the backend deletes the refresh token and revokes the access token's `jti` |
+| UC-LOGOUT-02 Route guard | `authGuard` on every route except `/login`; `adminGuard` on `/reports`; expired sessions redirect to login |
+| Role-based menu | `ADMIN` sees Reports and the edit actions; `USER` sees a read-only directory. The backend enforces the same rules |
+
+## API reference
+
+All endpoints are under `/api` and use JSON. Except for login, refresh, and logout, every request needs `Authorization: Bearer <accessToken>`.
+
+| Method | Path | Role | Description |
+| ------ | ---- | ---- | ----------- |
+| POST | `/auth/login` | public | `{username, password, rememberMe}` → `{accessToken, accessTokenExpiresAt, refreshToken, refreshTokenExpiresAt, user}` |
+| POST | `/auth/refresh` | public | `{refreshToken}` → new token pair (the old refresh token becomes invalid) |
+| POST | `/auth/logout` | public | `{refreshToken}`; also revokes the bearer token if one is sent → 204 |
+| GET | `/auth/me` | any | Current user `{username, fullName, role}` |
+| GET | `/departments` | any | `[{id, name}]` |
+| GET | `/employees` | any | Query: `page` (0-based), `size` (≤ 100, default 10), `sort` (`name\|email\|title\|department\|status\|joined`), `direction` (`asc\|desc`), `search`, `departmentId`, `status` (`ACTIVE\|ON_LEAVE\|INACTIVE`) → `{content, page, size, totalElements, totalPages}` |
+| GET | `/employees/stats` | any | `{total, active, onLeave, inactive, departments}` |
+| GET | `/employees/{id}` | any | One employee |
+| POST | `/employees` | ADMIN | Create → 201 + `Location` header |
+| PUT | `/employees/{id}` | ADMIN | Update |
+| DELETE | `/employees/{id}` | ADMIN | Delete → 204 |
+| GET | `/reports/employees` | ADMIN | Query: `from`, `to` (yyyy-MM-dd, default: current month), `departmentId`, `status`, plus paging/sorting as above |
+| GET | `/reports/summary` | ADMIN | Same filters → `{from, to, total, byStatus[], byDepartment[], byJoinMonth[]}` |
+| GET | `/reports/export/excel` | ADMIN | Same filters + `sort`/`direction` → `.xlsx` download |
+| GET | `/reports/export/pdf` | ADMIN | Same filters + `sort`/`direction` → `.pdf` download |
+| GET | `/actuator/health` | public | Health check (used by Docker) |
+
+Employee request body:
+
+```json
+{ "name": "Ada Lovelace", "email": "ada@example.com", "phone": "+1 (202) 555-0199",
+  "title": "Engineer", "departmentId": 1, "status": "ACTIVE", "joinedOn": "2026-01-05" }
 ```
 
-Production files are generated in `frontend/dist/employee-management/browser`. Any static hosting must fall back to index.html for Angular routes.
+Every error uses the same body shape:
 
-## What you can try
+```json
+{ "timestamp": "…", "status": 409, "error": "Conflict", "message": "An employee with this email already exists.",
+  "path": "/api/employees", "fieldErrors": { "email": "An employee with this email already exists." } }
+```
 
-1. Open /employees while signed out: you should be redirected to login.
-2. Login fields require a username of at least 3 characters and a password of at least 6. Incorrect demo credentials show an error. Remember me stores only the username.
-3. Search by name, email, or job title. Search waits 300 ms before filtering. Use department/status filters, column sorting, and the page controls (10 records by default).
-4. Add an employee, edit by selecting a row or Edit, and delete through the confirmation dialog. Email addresses must be unique, ignoring case. Changes survive refresh in the same browser.
-5. Open Reports. The date range defaults to this month and filters the employee join date. Try department/status filters and an invalid date range.
-6. Export Excel or PDF: every filtered record is exported, including records on other pages. Empty/invalid reports disable export.
-7. Sign out: protected routes become inaccessible. A 30-minute idle timer warns at 29 minutes before signing out. The demo session also expires after 8 hours.
+Status codes: 400 validation or bad parameters (`fieldErrors` per field) · 401 missing, invalid, expired, or revoked token · 403 wrong role · 404 not found · 409 duplicate.
 
-## Source guide
+## Database design
 
-- `frontend/src/main.ts`: starts Angular and registers routing, animations, and HTTP support.
-- `frontend/src/app/app.routes.ts`: public login and protected employee/report routes.
-- `frontend/src/app/auth.service.ts`: demo session, route guard, idle timeout, and future API token interceptor.
-- `frontend/src/app/login.component.ts`: reactive login form.
-- `frontend/src/app/shell.component.ts`: sidebar, workspace header, navigation, sign-out.
-- `frontend/src/app/employee.service.ts`: typed employee model, fictional sample data, and browser persistence.
-- `frontend/src/app/employees.component.ts`: directory, summary cards, search/filter controls, and dialog actions.
-- `frontend/src/app/employee-dialog.component.ts`: reactive add/edit form and delete confirmation.
-- `frontend/src/app/employee-table.component.ts`: shared Material table, sorting, pagination, and empty state.
-- `frontend/src/app/reports.component.ts`: report filters, summaries, and lazy-loaded ExcelJS/jsPDF exports.
-- `frontend/src/styles.scss`: Material theme, application layout, mobile layout.
+```
+departments (id PK, name UNIQUE NOT NULL)
+     ▲ 1
+     │ N   fk_employees_department
+employees (id PK, name, email UNIQUE, phone, title, department_id FK NOT NULL,
+           status CHECK IN ('ACTIVE','ON_LEAVE','INACTIVE'), joined_on DATE,
+           created_at, updated_at)            indexes: joined_on, status, name
 
-## Current boundaries
+users (id PK, username UNIQUE, password_hash (BCrypt), full_name, role CHECK IN ('ADMIN','USER'), created_at)
+     ▲ 1
+     │ N   fk_refresh_tokens_user (ON DELETE CASCADE)
+refresh_tokens (id PK, token_hash UNIQUE (SHA-256), user_id FK, expires_at, created_at)
 
-This is a frontend demonstration, not secure authentication. The demo credentials and session are intentionally visible client-side. It does not issue fake JWTs. Do not store real employee information in this demo.
+revoked_access_tokens (jti PK, expires_at)    -- access tokens revoked at logout
+```
 
-Sorting, filtering, pagination, validation, and summaries currently happen in the browser. Backend enforcement, real JWT login, BCrypt password storage, roles, database uniqueness constraints, SQL aggregation, and server pagination remain for Spring Boot/MySQL integration. There is no optional token refresh implementation yet. Browser localStorage can be cleared to reset demo data.
+- Migrations: `backend/src/main/resources/db/migration` (schema) and `db/seed` (demo data, MySQL only).
+- Hibernate runs with `ddl-auto: validate`, so the application refuses to start if entities and schema drift apart.
+- Employee emails are trimmed and lower-cased before saving, so uniqueness is case-insensitive in any collation.
+- An hourly job deletes expired refresh tokens and revocation entries.
 
-The interceptor is prepared to attach `peopledesk.jwt` only to http://localhost:8080/api/; demo login does not populate this key. Remove demo sessions when integrating real login. Backend authorization must enforce all protected operations regardless of the frontend guard.
+## Security
 
-## Planned API contract (not implemented yet)
+- **Passwords**: stored only as BCrypt hashes; the seed file contains hashes, not passwords.
+- **JWT**: HS256 with a server secret; issuer and expiry are verified. Access tokens last 15 minutes. Refresh tokens are 256-bit random values stored as SHA-256 hashes, single-use, with an absolute expiry.
+- **Authorization**: enforced in `SecurityConfig` by URL and HTTP method, independent of the Angular guards.
+- **SQL injection**: all queries are Spring Data / JPQL / Criteria API with bound parameters. LIKE wildcards in search text are escaped. Sort fields are whitelisted.
+- **Input validation**: Bean Validation on every request body, mirrored by the Angular validators.
+- **Headers**: Content-Security-Policy (`script-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options`, `X-Frame-Options: DENY`. CSRF protection is off because the API is stateless and uses bearer headers, not cookies.
+- **Errors**: stack traces are never returned; unexpected errors are logged on the server and the client gets a generic message.
+- **Container**: runs as a non-root user; secrets come from environment variables.
+- **Known trade-offs**: storing the JWT in localStorage was required by the assessment, but an XSS bug could read it (the CSP reduces that risk; an HttpOnly cookie would avoid it). There is no login rate limiting or account lockout yet.
 
-| Method | Endpoint | Purpose |
-| --- | --- | --- |
-| POST | /api/auth/login | Validate credentials; return real access token, expiry, and user roles |
-| GET | /api/employees?page=0&size=10&sort=name,asc&search= | Server search, filters, sorting, pagination |
-| POST | /api/employees | Validate and create employee |
-| PUT | /api/employees/{id} | Validate and update employee |
-| DELETE | /api/employees/{id} | Delete employee |
-| GET | /api/reports/employees?from=YYYY-MM-DD&to=YYYY-MM-DD | Filtered report rows |
-| GET | /api/reports/summary?from=YYYY-MM-DD&to=YYYY-MM-DD | Database summary/aggregations |
+## Testing
 
-Use Employee DTO fields: id, name, email, phone, department, title, status, joined. Standardize status enum mapping and error responses with the backend. Return validation errors with field messages; map duplicate email to a user-friendly conflict response. Add a Spring Boot development CORS rule for http://127.0.0.1:4200 or use an Angular development proxy.
+```sh
+cd backend && mvn test
+```
 
-## Learning path
+34 tests:
 
-Start with main.ts → routes → login component → auth service. Then read the Employee interface and service before following the directory component and dialog. Finally trace filtered report data into the export functions. Angular standalone components import the Material controls and form features they use directly; Reactive Forms keep input values and validation rules in TypeScript.
+- `JwtServiceTest`: token round trip; rejects expired, tampered, foreign-key, and garbage tokens; rejects short secrets.
+- `AuthServiceTest`: login, remember-me lifetime, generic bad-credential message, refresh rotation and expiry, logout revocation.
+- `EmployeeServiceTest`: email normalization, duplicate and unknown-department rejection, update/delete, stats, sort whitelist, LIKE escaping.
+- `ReportServiceTest`: default current-month range, rejects from > to.
+- `ApiIntegrationTest`: full HTTP stack on H2 with the real Flyway schema. Covers 401/403 rules, CRUD, validation errors, 409 duplicates, SQL-injection-style search, the viewer role, report summary/rows, and Excel/PDF downloads.
 
-Official Angular references: https://v19.angular.dev/guide/forms and https://angular.dev/api/platform-browser/bootstrapApplication.
+The frontend has no automated tests. It was verified with a scripted headless-Chrome run (see `AI_USAGE_LOG.md`).
 
-## Verification performed
+## Project structure
 
-- Strict TypeScript check and Angular template compilation passed.
-- Angular production build passed. Export libraries emit CommonJS optimization warnings; they are loaded only when an export is requested.
-- Browser checks passed for disabled invalid login, wrong credentials, successful login, employee creation/editing, 300 ms search, pagination, delete confirmation/cancel, report invalid date ranges, export downloads, sign-out, and protected-route redirection.
-- The downloaded Excel workbook was reopened: eight columns and seven filtered employee rows matched the report. PDF download completed; its visual contents have not been independently inspected.
-- Refresh retained the browser test employee and its updated title. One fictional Demo Tester record was added during testing, in browser storage only. A fresh browser starts with 18 seed records.
-- The 30-minute idle timeout has not been tested with a full elapsed-time wait. Delete confirmation was tested with Cancel; permanent removal was not exercised in the browser.
-- Angular disk caching is disabled because the native cache crashed in this environment. If macOS reports too many file watchers, use `npm start -- --poll 2000 --hmr=false`.
-
-There is no automated frontend test suite in this initial version; the above are build and manual browser checks.
+```
+backend/
+  src/main/java/com/peopledesk/
+    auth/         login, refresh, logout, refresh-token + revocation entities, cleanup job
+    security/     SecurityConfig, JwtService, JwtAuthenticationFilter, UserDetailsService
+    employee/     entity, repository (+ aggregate queries), Criteria specifications, service, controller, DTOs
+    department/   entity, repository, controller
+    report/       report service/controller, Excel and PDF writers, summary DTOs
+    user/         User entity, Role, repository
+    common/       error model, exception handler, page DTO
+    config/       clock bean, SPA deep-link forwarding
+  src/main/resources/db/{migration,seed}/   Flyway SQL
+frontend/src/app/
+  core/       API models, AuthService, interceptor, guards, idle timeout, HTTP helpers
+  employees/  directory page, add/edit dialog, delete dialog, validators, service
+  reports/    report page and service
+  shared/     server-driven employee table
+  layout/     sidebar shell
+  login/      login page
+Dockerfile, docker-compose.yml, .env.example
+```
