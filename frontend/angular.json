@@ -30,7 +30,15 @@
                   "maximumWarning": "1MB",
                   "maximumError": "2MB"
                 }
-              ]
+              ],
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": true
+              }
             },
             "development": {
               "optimization": false,
@@ -47,7 +55,10 @@
               "buildTarget": "employee-management:build:development"
             }
           },
-          "defaultConfiguration": "development"
+          "defaultConfiguration": "development",
+          "options": {
+            "proxyConfig": "proxy.conf.json"
+          }
         }
       }
     }

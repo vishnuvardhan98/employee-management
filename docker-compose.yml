@@ -1,0 +1,45 @@
+# Starts MySQL and the PeopleDesk application.
+#   docker compose up --build      → http://localhost:8080
+# Settings can be overridden in a .env file next to this one (see .env.example).
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: peopledesk
+      MYSQL_USER: ${DB_USERNAME:-peopledesk}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-peopledesk}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root}
+      TZ: UTC
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # TCP (127.0.0.1) only answers once initialization has finished and the app user exists.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  app:
+    build: .
+    image: peopledesk:latest
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/peopledesk?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+      DB_USERNAME: ${DB_USERNAME:-peopledesk}
+      DB_PASSWORD: ${DB_PASSWORD:-peopledesk}
+      # Leave empty to use a random key per start (sessions end when the app restarts).
+      JWT_SECRET: ${JWT_SECRET:-}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "${APP_PORT:-8080}:8080"
+
+volumes:
+  mysql-data:
